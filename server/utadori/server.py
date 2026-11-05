@@ -87,4 +87,5 @@ def pdf(i:str):
         h.write_text("<!doctype html><meta charset=utf-8><style>@page{size:A4;margin:10mm}body{margin:0}div{break-after:page}svg{width:100%;height:auto}</style>"+"".join(f"<div>{p}</div>" for p in pages),encoding="utf-8")
         subprocess.run([CHROME,"--headless","--no-sandbox","--disable-gpu","--no-pdf-header-footer",f"--print-to-pdf={o}",f"file://{h}"],check=True,timeout=90,capture_output=True)
         return Response(o.read_bytes(),media_type="application/pdf",headers=fname(d,".pdf"))
-app.mount("/",StaticFiles(directory=ROOT/"web",html=True),name="web")
+WEB=ROOT/"web" if (ROOT/"web").is_dir() else ROOT.parent/"docs"
+app.mount("/",StaticFiles(directory=WEB,html=True),name="web")
