@@ -1,0 +1,9 @@
+numpy
+scipy
+soundfile
+librosa
+onnxruntime
+verovio
+fastapi
+uvicorn
+python-multipart
