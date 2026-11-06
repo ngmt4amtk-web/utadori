@@ -1,5 +1,5 @@
 """うたどり: 歌の旋律の下書きを作り、人が直すためのサーバー。Tailscale内だけで使う。"""
-import json,os,pathlib,re,shutil,subprocess,sys,tempfile,threading,queue,time,uuid
+import html,json,os,pathlib,re,shutil,subprocess,sys,tempfile,threading,queue,time,uuid
 from fastapi import FastAPI,File,Form,HTTPException,UploadFile,Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse,JSONResponse,Response
@@ -25,6 +25,8 @@ def jd(i):
     if not re.fullmatch(r"[0-9a-f]{12}",i) or not (DATA/i).is_dir():raise HTTPException(404,"見つかりません")
     return DATA/i
 def meta(d):return json.loads((d/"meta.json").read_text(encoding="utf-8"))
+def clean_title(s):return re.sub(r"\s+"," ",re.sub(r"[\x00-\x1f\x7f]"," ",s)).strip()
+def file_stem(title):return (re.sub(r"^[\s.]+|[\s.]+$","",re.sub(r'[\\/:*?"<>|]',"_",title)) or "無題")[:120]
 @app.post("/api/jobs")
 async def create(file:UploadFile=File(...),title:str=Form(""),meter:int=Form(4),bpm:float=Form(0),grid:int=Form(3)):
     ext=pathlib.Path(file.filename or "").suffix.lower()
@@ -37,7 +39,7 @@ async def create(file:UploadFile=File(...),title:str=Form(""),meter:int=Form(4),
             if n>MAXB:
                 w.close();shutil.rmtree(d);raise HTTPException(413,"200MBまでです")
             w.write(c)
-    (d/"meta.json").write_text(json.dumps(dict(id=i,title=title or pathlib.Path(file.filename).stem,created=time.time()),ensure_ascii=False),encoding="utf-8")
+    (d/"meta.json").write_text(json.dumps(dict(id=i,title=clean_title(title) or clean_title(pathlib.Path(file.filename).stem),created=time.time()),ensure_ascii=False),encoding="utf-8")
     (d/"status.json").write_text(json.dumps(dict(state="queued",step="順番待ち"),ensure_ascii=False),encoding="utf-8")
     q.put((i,meter,bpm,grid));return dict(id=i)
 @app.get("/api/jobs")
@@ -49,6 +51,16 @@ def jobs():
 @app.get("/api/jobs/{i}")
 def job(i:str):
     d=jd(i);return {**meta(d),**json.loads((d/"status.json").read_text(encoding="utf-8"))}
+@app.put("/api/jobs/{i}/title")
+async def save_title(i:str,req:Request):
+    d=jd(i)
+    try:body=await req.json()
+    except ValueError:raise HTTPException(400,"題名を入れてください")
+    title=body.get("title") if isinstance(body,dict) else None
+    if not isinstance(title,str) or not (title:=clean_title(title)):raise HTTPException(400,"題名を入れてください")
+    if len(title)>200:raise HTTPException(400,"題名は200文字までです")
+    m=meta(d);m["title"]=title
+    t=d/"meta.tmp";t.write_text(json.dumps(m,ensure_ascii=False),encoding="utf-8");t.replace(d/"meta.json");return dict(ok=True,title=title)
 @app.get("/api/jobs/{i}/score")
 def score(i:str):
     p=jd(i)/"score.json"
@@ -75,16 +87,16 @@ def xml(d):
 def svg(i:str):return dict(pages=music.to_svg(xml(jd(i))))
 def fname(d,ext):
     from urllib.parse import quote
-    return {"Content-Disposition":"attachment; filename*=UTF-8''"+quote(meta(d)["title"]+ext)}
+    return {"Content-Disposition":"attachment; filename*=UTF-8''"+quote(file_stem(meta(d)["title"])+ext)}
 @app.get("/api/jobs/{i}/musicxml")
 def mx(i:str):
     d=jd(i);return Response(xml(d),media_type="application/vnd.recordare.musicxml+xml",headers=fname(d,".musicxml"))
 @app.get("/api/jobs/{i}/pdf")
 def pdf(i:str):
-    d=jd(i);pages=music.to_svg(xml(d),width=1000)
+    d=jd(i);pages=music.to_svg(xml(d),width=1000);title=html.escape(meta(d)["title"])
     with tempfile.TemporaryDirectory() as t:
         h=pathlib.Path(t)/"p.html";o=pathlib.Path(t)/"o.pdf"
-        h.write_text("<!doctype html><meta charset=utf-8><style>@page{size:A4;margin:10mm}body{margin:0}div{break-after:page}svg{width:100%;height:auto}</style>"+"".join(f"<div>{p}</div>" for p in pages),encoding="utf-8")
+        h.write_text(f'<!doctype html><meta charset=utf-8><title>{title}</title><style>@page{{size:A4;margin:10mm}}body{{margin:0}}div:not(:last-child){{break-after:page}}svg{{width:100%;height:auto}}h1{{margin:0 0 2mm;text-align:center;font:600 15pt/1.3 "Noto Serif CJK JP",serif;overflow-wrap:anywhere}}.first{{height:275mm;display:flex;flex-direction:column;overflow:hidden}}.first svg{{flex:1 1 0;min-height:0;width:100%;height:auto}}</style>'+"".join(f'<div class="first"><h1>{title}</h1>{p}</div>' if n==0 else f"<div>{p}</div>" for n,p in enumerate(pages)),encoding="utf-8")
         subprocess.run([CHROME,"--headless","--no-sandbox","--disable-gpu","--no-pdf-header-footer",f"--print-to-pdf={o}",f"file://{h}"],check=True,timeout=90,capture_output=True)
         return Response(o.read_bytes(),media_type="application/pdf",headers=fname(d,".pdf"))
 WEB=ROOT/"web" if (ROOT/"web").is_dir() else ROOT.parent/"docs"
